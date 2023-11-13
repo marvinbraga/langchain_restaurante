@@ -11,7 +11,7 @@ loader = DirectoryLoader(
     "./FAQ", glob="**/*.txt", loader_cls=TextLoader, show_progress=True
 )
 documents = loader.load()
-text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=50)
 docs = text_splitter.split_documents(documents)
 
 # PGVector needs the connection string to the database.
