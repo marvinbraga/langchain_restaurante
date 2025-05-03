@@ -1,44 +1,104 @@
-version: "3"
 services:
+  wait_services:
+    image: jwilder/dockerize
+    command: dockerize -wait tcp://postgres:5432 -wait tcp://redis:6379 -timeout 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   redis:
-    image: redis:latest
+    image: redis:7.2-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    command: redis-server --appendonly yes
 
   postgres:
-    build: ./postgres
+    build: 
+      context: .
+      dockerfile: ./.docker/postgres/Dockerfile
+    restart: unless-stopped
     ports:
       - "5433:5432"
     volumes:
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_data:/var/lib/postgresql/data
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: admin
-      POSTGRES_DB: vectordb
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d vectordb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    env_file:
+      - .env
 
   service2:
-    build: ./service2
+    build:
+      context: .
+      dockerfile: ./.docker/service2/Dockerfile
+    restart: unless-stopped
     ports:
       - "5000:80"
     depends_on:
-      - postgres
+      wait_services:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
 
   service3:
-    build: ./service3
+    build:
+      context: .
+      dockerfile: ./.docker/service3/Dockerfile
+    restart: unless-stopped
     ports:
       - "8000:80"
     env_file:
       - .env
     depends_on:
-      - postgres
+      wait_services:
+        condition: service_completed_successfully
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
 
   frontend:
-    build: ./frontend
+    build: 
+      context: ./frontend
+    restart: unless-stopped
     ports:
       - "3000:3000"
+    depends_on:
+      - service2
+      - service3
 
 volumes:
   redis_data:
-  redis2_data:
+    driver: local
+  postgres_data:
+    driver: local

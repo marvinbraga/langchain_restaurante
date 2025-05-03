@@ -10,12 +10,13 @@ const App = () => {
     const fetchConversation = async () => {
       const conversationId = localStorage.getItem("conversationId");
       if (conversationId) {
-        const response = await fetch(
-          `http://localhost:5000/service2/${conversationId}`
-        );
-        const data = await response.json();
-        if (!data.error) {
-          setConversation(data);
+        try {
+          // Por enquanto, vamos inicializar uma conversa vazia
+          // pois o backend não tem uma rota GET para recuperar conversas existentes
+          setConversation({ conversation: [] });
+        } catch (error) {
+          console.error("Erro ao recuperar conversa:", error);
+          setConversation({ conversation: [] });
         }
       }
     };
@@ -48,19 +49,30 @@ const App = () => {
       { role: "user", content: userMessage },
     ];
 
-    const response = await fetch(
-      `http://localhost:5000/service2/${conversationId}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversation: newConversation }),
-      }
-    );
+    try {
+      const response = await fetch(
+        `http://localhost:5000/conversation/${conversationId}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversation: newConversation }),
+        }
+      );
 
-    const data = await response.json();
-    setConversation(data);
-    setUserMessage("");
-    setIsLoading(false);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      setConversation(data);
+    } catch (error) {
+      console.error("Erro ao processar conversa:", error);
+      // Em caso de erro, mantenha a conversa local
+      setConversation({ conversation: newConversation });
+    } finally {
+      setUserMessage("");
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -74,7 +86,7 @@ const App = () => {
       }}
     >
       <h1 className="text-3xl font-bold mb-4 text-white">Restaurant Chatbot</h1>
-      {conversation.conversation.length > 0 && (
+      {conversation.conversation && conversation.conversation.length > 0 && (
         <div className="flex flex-col p-4 bg-white rounded shadow w-full max-w-md space-y-4">
           {conversation.conversation
             .filter((message) => message.role !== "system")

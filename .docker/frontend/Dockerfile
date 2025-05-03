@@ -4,10 +4,10 @@ WORKDIR /app
 
 EXPOSE 3000
 
-COPY package.json package-lock.json ./
+COPY ../../frontend/package.json package-lock.json ./
 
 RUN npm install --silent
 
-COPY . ./
+COPY ../../frontend ./
 
 CMD ["npm", "run", "dev"]

@@ -1,18 +1,71 @@
-import json
+"""
+FastAPI entry point para o Service2.
+
+Este módulo configura e inicializa a aplicação FastAPI, definindo rotas
+e gerenciando o ciclo de vida da aplicação. Segue o Facade Pattern
+para fornecer uma interface simples aos componentes da aplicação.
+"""
 import logging
-from typing import List, Optional
+from contextlib import asynccontextmanager
+from typing import Dict, Any
 
-import redis
-import requests
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
 
-logging.basicConfig(level=logging.INFO)
+from service2.core.config import settings
+from service2.models.schemas import Conversation, ConversationResponse, HealthResponse
+from service2.repositories import vector_store_repository
+from service2.services.conversation_service import create_conversation_service
+from service2.clients import create_service3_client
+
+# Configuração de logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
 
+# Gerenciador de contexto para ciclo de vida da aplicação
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Gerencia o ciclo de vida da aplicação FastAPI.
+    
+    Inicializa recursos necessários no startup e limpa recursos no shutdown,
+    implementando o Resource Management Pattern.
+    """
+    try:
+        # Startup - Inicializa recursos
+        logger.info("Iniciando o Service2...")
+        await vector_store_repository.initialize()
+        
+        # Inicializa cliente do Service3
+        await service3_client.initialize()
+        
+        logger.info("Service2 iniciado com sucesso")
+
+        yield
+
+    finally:
+        # Shutdown - Limpa recursos
+        logger.info("Finalizando o Service2...")
+        await vector_store_repository.cleanup()
+        await service3_client.cleanup()
+        logger.info("Service2 finalizado")
+
+
+# Cria a aplicação FastAPI
+app = FastAPI(
+    title="Restaurant FAQ Service",
+    description="Serviço de FAQ para restaurante usando IA",
+    version="2.0.0",
+    lifespan=lifespan
+)
+
+# Configura CORS com política permissiva para desenvolvimento
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,99 +74,161 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Cria instância do serviço de conversação
+conversation_service = create_conversation_service(vector_store_repository)
 
-class Message(BaseModel):
-    role: str
-    content: str
-
-
-class ConversationModel(BaseModel):
-    conversation: List[Message]
+# Cria cliente para comunicação com Service3
+service3_client = create_service3_client()
 
 
-class RedisStore:
-    def __init__(self, host: str, port: int, db: int):
-        self.client = redis.Redis(host=host, port=port, db=db)
-
-    def get(self, key: str) -> Optional[dict]:
-        data = self.client.get(key)
-        if data:
-            return json.loads(data)
-        return None
-
-    def set(self, key: str, value: dict):
-        self.client.set(key, json.dumps(value))
-
-
-class Assistant:
-    def __init__(self, service_url: str):
-        self.service_url = service_url
-
-    def get_reply(self, conversation_id: str, conversation: dict) -> str:
-        response = requests.post(f"{self.service_url}/{conversation_id}", json=conversation)
-        response.raise_for_status()
-        return response.json()["reply"]
-
-
-class Conversation:
-    def __init__(self, initial_message: Optional[str] = None):
-        if initial_message:
-            self.conversation = [{"role": "system", "content": initial_message}]
-        else:
-            self.conversation = []
-
-    def add_message(self, message: dict):
-        self.conversation.append(message)
-
-    def get_messages(self) -> List[dict]:
-        return self.conversation
-
-
-class ConversationService:
-
-    def __init__(self, store, assistant):
-        self.store = store
-        self.assistant = assistant
-
-    def get_conversation(self, conversation_id: str):
-        conversation_data = self.store.get(conversation_id)
-        if not conversation_data:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        return conversation_data
-
-    def post_conversation(self, conversation_id: str, conversation_data: ConversationModel):
-        existing_data = self.store.get(conversation_id)
-        conversation = Conversation()
-        if existing_data:
-            conversation.conversation = existing_data["conversation"]
-        else:
-            conversation.add_message({"role": "system", "content": "You are a helpful assistant."})
-
-        user_message = conversation_data.conversation[-1]
-        conversation.add_message(user_message.model_dump())
-
-        assistant_message_content = self.assistant.get_reply(
-            conversation_id,
-            {"conversation": conversation.get_messages()}
-        )
-        conversation.add_message({"role": "assistant", "content": assistant_message_content})
-
-        self.store.set(conversation_id, {"conversation": conversation.get_messages()})
-
-        return {"conversation": conversation.get_messages()}
-
-
-service = ConversationService(
-    RedisStore(host='redis', port=6379, db=0),
-    Assistant(service_url='http://service3:80/service3')
+@app.post(
+    "/conversation/{conversation_id}",
+    response_model=ConversationResponse,
+    summary="Processa uma conversação com o agente ReAct",
+    description="Processa uma conversação e retorna uma resposta do agente ReAct."
 )
+async def process_conversation(
+        conversation_id: str,
+        conversation: Conversation,
+        background_tasks: BackgroundTasks
+) -> ConversationResponse:
+    """
+    Processa uma conversação completa.
+    
+    Args:
+        conversation_id: ID único da conversação
+        conversation: Dados da conversa
+        background_tasks: Tarefas em background
+        
+    Returns:
+        Resposta processada com metadados
+    """
+    try:
+        # Envia a requisição para o Service3
+        response = await service3_client.process_conversation(
+            conversation_id=conversation_id,
+            conversation_data=conversation.dict()
+        )
+
+        # Adiciona tarefa de logging em background
+        background_tasks.add_task(
+            log_conversation_metrics,
+            conversation_id,
+            response.get("metadata", {})
+        )
+
+        return ConversationResponse(**response)
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Erro: {e}")
+        logger.error(f"Erro HTTP ao comunicar com Service3: {e.response.status_code}")
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"Erro ao comunicar com Service3: {e.response.text}"
+        )
+    except httpx.RequestError as e:
+        logger.error(f"Erro de rede ao comunicar com Service3: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Service3 indisponível"
+        )
+    except ValueError as e:
+        logger.error(f"Erro de validação na conversação {conversation_id}: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Erro ao processar conversação {conversation_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao processar conversação")
 
 
-@app.get("/service2/{conversation_id}")
-async def get_conversation_endpoint(conversation_id: str):
-    return service.get_conversation(conversation_id)
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+    summary="Verifica a saúde do serviço",
+    description="Retorna o status do serviço e seus componentes."
+)
+async def health_check() -> HealthResponse:
+    """
+    Verifica a saúde do serviço e seus componentes.
+    
+    Returns:
+        Status do serviço e seus componentes
+    """
+    try:
+        # Verifica conexão com o vector store
+        test_search = await vector_store_repository.search("test", limit=1)
+        vector_store_status = {
+            "status": "operational",
+            "response_time_ms": 0  # Adicionar timing se necessário
+        }
+
+        return HealthResponse(
+            status="healthy",
+            components={
+                "database": {
+                    "status": "connected",
+                    "connection_string": settings.database.connection_string.split("@")[-1]
+                },
+                "vector_store": vector_store_status,
+                "openai": {
+                    "status": "configured",
+                    "model": settings.openai.model
+                },
+                "service3": {
+                    "status": "available",
+                    "base_url": settings.service3.base_url
+                }
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Health check falhou: {e}")
+        return HealthResponse(
+            status="unhealthy",
+            components={
+                "error": {"status": "error", "message": str(e)}
+            }
+        )
 
 
-@app.post("/service2/{conversation_id}")
-async def post_conversation_endpoint(conversation_id: str, conversation_data: ConversationModel):
-    return service.post_conversation(conversation_id, conversation_data)
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc: Exception) -> JSONResponse:
+    """
+    Handler global para exceções não tratadas.
+    
+    Garante que todas as exceções sejam apropriadamente logadas
+    e retornem uma resposta adequada.
+    """
+    logger.error(f"Erro não tratado: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Erro interno do servidor | {exc}"}
+    )
+
+
+# Funções auxiliares para tarefas em background
+async def log_conversation_metrics(conversation_id: str, metadata: Dict[str, Any]) -> None:
+    """
+    Registra métricas da conversação para análise posterior.
+    
+    Args:
+        conversation_id: ID da conversação
+        metadata: Metadados da resposta
+    """
+    try:
+        # Aqui você poderia enviar métricas para um sistema de monitoramento
+        logger.info(f"Métricas da conversação {conversation_id}: {metadata}")
+    except Exception as e:
+        logger.error(f"Erro ao registrar métricas: {e}")
+
+
+# Permite execução direta para desenvolvimento
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=80,
+        reload=settings.debug,
+        log_level="info"
+    )

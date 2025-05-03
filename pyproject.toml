@@ -1,24 +1,21 @@
-[tool.poetry]
-name = "langchain-production-project"
+[project]
+name = "langchain-restaurante"
 version = "0.1.0"
-description = ""
-authors = ["Marcus <marcus@pyteam.pro>"]
-readme = "README.md"
-packages = [{include = "langchain_production_project"}]
-
-[tool.poetry.dependencies]
-python = "^3.10"
-python-dotenv = "^1.0.0"
-langchain = "^0.0.300"
-openai = "0.28.0"
-fastapi = "^0.103.1"
-redis = "^5.0.0"
-jupyter = "^1.0.0"
-tiktoken = "^0.5.1"
-psycopg2-binary = "^2.9.9"
-pgvector = "^0.2.3"
-
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.12",
+    "jupyter>=1.1.1",
+    "langchain>=0.3.25",
+    "langchain-community>=0.3.23",
+    "langchain-core>=0.3.58",
+    "langchain-openai>=0.3.16",
+    "langchain-postgres>=0.0.13",
+    "langgraph>=0.4.1",
+    "pgvector>=0.3.6",
+    "psycopg[binary]>=3.0",
+    "python-dotenv>=1.1.0",
+    "redis>=6.0.0",
+    "tiktoken>=0.9.0",
+    "uvicorn>=0.34.2",
+]
